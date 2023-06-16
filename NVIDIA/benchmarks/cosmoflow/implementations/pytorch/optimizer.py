@@ -22,7 +22,8 @@ from omegaconf import DictConfig
 import itertools
 from typing import Callable, List, Optional, Tuple
 
-from apex.optimizers import FusedSGD
+#from apex.optimizers import FusedSGD
+from habana_frameworks.torch.hpex.optimizers import FusedSGD
 
 
 def get_optimizer(train_config: DictConfig, model: torch.nn.Module) -> Tuple[object, object]:

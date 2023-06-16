@@ -149,7 +149,8 @@ class AbstractStagerExecutor(object):
                 else:
                     with open(input_path, "rb") as fsrc:
                         data = fsrc.read()
-                        data = gzip.decompress(data)
+                        
+                        # data = gzip.decompress(data) # uncomment if we have compress data ytang
 
                 if str(output_path).endswith(".tfrecord"):
                     save_idx_file(data, f"{str(output_path)}.idx")
@@ -340,7 +341,7 @@ class ThreadPoolDirectExecutor(AbstractStagerExecutor):
                     profile: bool = False,
                     compressed: bool = False,
                     sizes: Optional[np.ndarray] = None) -> Callable[[], bool]:
-        assert data_target_list is None, "ThreadPoolDirectExecutor can bu used only with packed data samples"
+        #assert data_target_list is None, "ThreadPoolDirectExecutor can bu used only with packed data samples"
 
         total_files_to_stage = len(data_sample_list)
         if self._dist_comm is not None:

@@ -77,6 +77,7 @@ PARAMS=(
 
     data.root_dir=${DATAROOT}
 )
+echo ${PARAMS}
 
 if [[ ${INSTANCES} -gt 1 ]]; then
     PARAMS+=(

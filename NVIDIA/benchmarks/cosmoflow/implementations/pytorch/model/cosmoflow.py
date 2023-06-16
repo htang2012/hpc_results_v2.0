@@ -75,24 +75,24 @@ class CosmoFlow(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for i, conv_layer in enumerate(self.conv_seq):
-            with ProfilerSection(f"conv_{i}", True):
+            with ProfilerSection(f"conv_{i}", False):
                 x = conv_layer(x)
         #x = x.flatten(1)
 
         # for tf compatibility
         x = x.permute(0, 2, 3, 4, 1).flatten(1)
 
-        with ProfilerSection(f"dense_1", True):
+        with ProfilerSection(f"dense_1", False):
             x = nnf.leaky_relu(self.dense1(x.flatten(1)), negative_slope=0.3)
             if self.dropout_rate is not None:
                 x = self.dr1(x)
 
-        with ProfilerSection(f"dense_2", True):
+        with ProfilerSection(f"dense_2", False):
             x = nnf.leaky_relu(self.dense2(x), negative_slope=0.3)
             if self.dropout_rate is not None:
                 x = self.dr2(x)
 
-        with ProfilerSection("output", True):
+        with ProfilerSection("output", False):
             return torch.tanh(self.output(x)) * 1.2
 
 
@@ -102,7 +102,7 @@ def get_standard_cosmoflow_model(kernel_size: int = 3,
                                  dropout_rate: Optional[float] = 0.5,
                                  layout: Convolution3DLayout = Convolution3DLayout.NCDHW,
                                  script: bool = False,
-                                 device: str = "cuda") -> nn.Module:
+                                 device: str = "hpu") -> nn.Module:
     model = CosmoFlow(n_conv_layers=n_conv_layer,
                       n_conv_filters=n_conv_filters,
                       conv_kernel=kernel_size,

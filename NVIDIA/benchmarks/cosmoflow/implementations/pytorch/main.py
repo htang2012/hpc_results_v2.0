@@ -18,12 +18,14 @@ import utils
 from data.dali_npy import NPyLegacyDataPipeline
 from data.dali_tfr_gzip import TFRecordDataPipeline
 from data.dali_synthetic import SyntheticDataPipeline
+from nvidia.dali import types
 from utils.app import PytorchApplication
 from omegaconf import OmegaConf
-
 import hydra
 import torch
 import torch.distributed
+import habana_frameworks.torch as ht
+import habana_frameworks.torch.core as htcore
 
 from torch.nn.parallel import DistributedDataParallel as DDP
 from utils.executor import get_executor_from_config
@@ -86,7 +88,8 @@ class CosmoflowMain(PytorchApplication):
             elif self._config["data"]["dataset"] == "cosmoflow_npy":
                 self._training_pipeline, self._validation_pipeline = NPyLegacyDataPipeline.build(config=self._config["data"],
                                                                                                  distenv=self._distenv,
-                                                                                                 device=self._distenv.local_rank,
+                                                                                                 #device=self._distenv.local_rank, # here we need to switch to cpu 
+                                                                                                 device = types.CPU_ONLY_DEVICE_ID,
                                                                                                  seed=seed)
             elif self._config["data"]["dataset"] == "cosmoflow_tfr":
                 self._training_pipeline, self._validation_pipeline = TFRecordDataPipeline.build(config=self._config["data"],
@@ -102,13 +105,14 @@ class CosmoflowMain(PytorchApplication):
                                                        dropout_rate=train_cfg["dropout_rate"],
                                                        layout=model_layout,
                                                        script=model_cfg["script"],
-                                                       device="cuda")
+                                                       device="hpu")
             utils.logger.event(key="dropout", value=train_cfg["dropout_rate"])
 
-            capture_stream = torch.cuda.Stream()
-
+            #capture_stream = torch.cuda.Stream()
+            capture_stream = ht.hpu.Stream()
             if not self._distenv.is_single:
-                with torch.cuda.stream(capture_stream):
+                #with torch.cuda.stream(capture_stream):
+                with ht.hpu.Stream(capture_stream):
                     self._model = DDP(self._model,
                                       device_ids=[self._distenv.local_rank],
                                       process_group=None)
@@ -169,7 +173,9 @@ class CosmoflowMain(PytorchApplication):
             else:
                 run_status = "aborted"
 
-            torch.cuda.synchronize()
+            #torch.cuda.synchronize()
+            ht.hpu.synchronize()
+            
         self._distenv.local_barrier()
         utils.logger.stop(key=utils.logger.constants.RUN_STOP,
                           metadata={"status": run_status,

@@ -16,7 +16,9 @@ import torch
 import torch.nn as nn
 
 from torch.nn.parallel import DistributedDataParallel as DDP
-
+import habana_frameworks.torch.core as htcore
+import habana_frameworks.torch as ht
+from habana_frameworks.torch.utils import debug
 
 from typing import Iterator, Tuple, Optional
 from model.utils import Convolution3DLayout
@@ -40,6 +42,7 @@ def _convert_format(input_tensor: torch.Tensor) -> torch.Tensor:
     return input_tensor.log1p()
 
 
+
 class Trainer(object):
     def __init__(self,
                  config: DictConfig,
@@ -61,26 +64,32 @@ class Trainer(object):
         self._model_layout = Convolution3DLayout(config["model"]["layout"])
         self._data_layout = Convolution3DLayout(config["data"]["data_layout"])
 
-        self.zeroing_stream = torch.cuda.Stream()
-        self.prefetch_stream = torch.cuda.Stream()
+        #self.zeroing_stream = torch.cuda.Stream()
+        #self.zeroing_stream = torch.cuda.Stream()
+        self.prefetch_stream = ht.hpu.Stream()
+        self.zeroing_stream  = ht.hpu.Stream()
+        
         self.last_scale = None
 
         self._amp = amp
         if self._amp:
-            self.scaler_ = torch.cuda.amp.GradScaler()
+            # Although HPU provides support for bfloat16, which offers high precision, we do not require GradScaler.
+            self.scaler_ = torch.cuda.amp.GradScaler(enabled=False) 
 
     def train_step(self,
                    x: torch.Tensor,
                    y_hat: torch.Tensor) -> None:
+        x = x.to('hpu')
+        y_hat = y_hat.to('hpu')
         with utils.ProfilerSection("training step", self._enable_profiling):
             if hasattr(self.model, "graph_capture"):
                 with utils.ProfilerSection("copy", self._enable_profiling):
-                    with torch.cuda.stream(self.zeroing_stream):
+                    with ht.hpu.stream(self.zeroing_stream):
                         self.model.zero_capture.replay()
 
                     self.model.static_input_data.copy_(x)
                     self.model.static_input_label.copy_(y_hat)
-                    torch.cuda.current_stream().wait_stream(self.zeroing_stream)
+                    ht.hpu.current_stream().wait_stream(self.zeroing_stream)
 
                 with utils.ProfilerSection("replay", self._enable_profiling):
                     self.model.graph_capture.replay()
@@ -89,17 +98,27 @@ class Trainer(object):
             else:
                 self.optimizer.zero_grad()
                 if self._amp:
-                    with torch.cuda.amp.autocast():
+                    #with torch.cuda.amp.autocast():
+                    with torch.autocast(device_type='hpu', dtype=torch.bfloat16, enabled=True):
                         y = self.model(x)
                         loss = self.loss_fn(y, y_hat)
                     self.scaler_.scale(loss).backward()
+                    htcore.mark_step()
                     self.scaler_.step(self.optimizer)
+                    htcore.mark_step()
                     self.scaler_.update()
                 else:
+                    #x = x.to('hpu')
+                    #y_hat = y_hat.to('hpu')
                     y = self.model(x)
                     loss = self.loss_fn(y, y_hat)
                     loss.backward()
+                    #self.optimizer.step()
+                    # API call to trigger execution
+                    htcore.mark_step()
                     self.optimizer.step()
+                    # API call to trigger execution
+                    htcore.mark_step()
 
     def train_epoch(self,
                     train_iter: DataIter,
@@ -111,7 +130,7 @@ class Trainer(object):
             current_step = 0
 
             try:
-                with torch.cuda.stream(self.prefetch_stream):
+                with ht.hpu.stream(self.prefetch_stream):
                     input_data = next(train_iter)
             except StopIteration:
                 should_run = False
@@ -121,13 +140,13 @@ class Trainer(object):
                         _should_mark_profiling(epoch, current_step, self._config["profile_range"], start=True)):
                     utils.cudaProfilerStart()
                 with utils.ProfilerSection("convert", self._enable_profiling):
-                    torch.cuda.current_stream().wait_stream(self.prefetch_stream)
+                    ht.hpu.current_stream().wait_stream(self.prefetch_stream)
                     data = self._convert(input_data[0])
                     data = _convert_format(data)
                     label = input_data[1]
 
                 try:
-                    with torch.cuda.stream(self.prefetch_stream):
+                    with ht.hpu.stream(self.prefetch_stream):
                         input_data = next(train_iter)
                 except StopIteration:
                     should_run = False
@@ -139,6 +158,7 @@ class Trainer(object):
                     utils.cudaProfilerStart()
                 current_step += 1
             self.lr_scheduler.step()
+            print(debug._get_fallback_op_count())
 
     def eval_epoch(self,
                    eval_iter: DataIter,
@@ -153,14 +173,19 @@ class Trainer(object):
                     data = self._convert(input_data[0])
                     label = input_data[1]
                     data = _convert_format(data)
+                    data = data.to('hpu')
+                    label = label.to('hpu') 
                     if self._amp:
-                        with torch.cuda.amp.autocast():
+                        #with torch.cuda.amp.autocast():
+                        with torch.autocast(device_type='hpu', dtype=torch.bfloat16, enabled=True):
                             y = self.model(data)
                     else:
+                        #data = data.to('hpu')
+                        #label = label.to('hpu')    
                         y = self.model(data)
 
                     self.score_fn.update(y.float(), label)
-
+        print(debug._get_fallback_op_count())
         return self.score_fn.get_value(distributed=not self._distenv.is_single,
                                        pg_handler=None)
 
@@ -172,13 +197,13 @@ class Trainer(object):
         utils.logger.start(key=utils.logger.constants.EPOCH_START,
                            metadata={'epoch_num': epoch + 1,
                                      "lr": self.lr_scheduler.get_last_lr()})
-        with utils.CudaExecutionTimer() as train_latency:
+        with utils.HPUExecutionTimer() as train_latency:
             if not eval_only:
                 self.train_epoch(train_iter, epoch)
 
         utils.logger.start(key=utils.logger.constants.EVAL_START,
                            metadata={'epoch_num': epoch + 1})
-        with utils.CudaExecutionTimer() as eval_latency:
+        with utils.HPUExecutionTimer() as eval_latency:
             validation_score = self.eval_epoch(eval_iter, epoch)
         utils.logger.start(key=utils.logger.constants.EVAL_STOP,
                            metadata={'epoch_num': epoch + 1})
@@ -247,8 +272,8 @@ class Trainer(object):
                                             *list(self._config["data"]["target_shape"])),
                                             dtype=torch.float32, device=static_input_data.device)
 
-            capture_stream.wait_stream(torch.cuda.current_stream())
-            with torch.cuda.stream(capture_stream):
+            capture_stream.wait_stream(ht.hpu.current_stream())
+            with ht.hpu.stream(capture_stream):
                 for param in self.model.parameters():
                     backup_weights[param] = param.clone()
 
@@ -256,7 +281,8 @@ class Trainer(object):
                     self.optimizer.zero_grad()
 
                     if self._amp:
-                        with torch.cuda.amp.autocast():
+                        #with torch.cuda.amp.autocast():
+                        with torch.autocast(device_type='hpu', dtype=torch.bfloat16, enabled=True):
                             y = self.model(static_input_data)
                             loss = self.loss_fn(y, static_input_label)
                         self.scaler_.scale(loss).backward()
@@ -265,21 +291,29 @@ class Trainer(object):
                         loss = self.loss_fn(y, static_input_label)
                         loss.backward()
 
-            torch.cuda.current_stream().wait_stream(capture_stream)
+            ht.hpu.current_stream().wait_stream(capture_stream)
 
             if self._config["model"]["cuda_graph"] == True:
                 self.optimizer.zero_grad()
-                self.model.graph_capture = torch.cuda.CUDAGraph()
-                self.model.zero_capture = torch.cuda.CUDAGraph()
+                
+                #self.model.graph_capture = torch.cuda.CUDAGraph()
+                #self.model.zero_capture = torch.cuda.CUDAGraph()
+                
+                self.model.graph_capture = htcore.hpu.HPUGraph()
+                self.model.zero_capture = htcore.hpu.HPUGraph()
+                
                 self.model.static_input_data = static_input_data
                 self.model.static_input_label = static_input_label
 
-                with torch.cuda.graph(self.model.zero_capture):
+                #with torch.cuda.graph(self.model.zero_capture):
+                with htcore.hpu.graph(self.model.zero_capture):
                     self.optimizer.zero_grad()
 
-                with torch.cuda.graph(self.model.graph_capture):
+                #with torch.cuda.graph(self.model.graph_capture):
+                with htcore.hpu.graph(self.model.graph_capture):
                     if self._amp:
-                        with torch.cuda.amp.autocast():
+                       # with torch.cuda.amp.autocast(enabled=False):
+                        with torch.autocast(device_type='hpu', dtype=torch.bfloat16, enabled=True):
                             y = self.model(static_input_data)
                             loss = self.loss_fn(y, static_input_label)
                         self.scaler_.scale(loss).backward()
@@ -298,6 +332,8 @@ class Trainer(object):
         with torch.no_grad():
             for param in self.model.parameters():
                 param.copy_(backup_weights[param])
+                
+        print(debug._get_fallback_op_count())
 
     def _convert(self, tensor: torch.Tensor) -> torch.Tensor:
         strides = tensor.stride()

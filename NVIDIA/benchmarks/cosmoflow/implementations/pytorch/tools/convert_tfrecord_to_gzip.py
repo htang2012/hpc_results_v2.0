@@ -94,7 +94,11 @@ def main():
     end = min([total, start + chunksize])
     inputfiles_all = inputfiles_all[start:end]
 
-    tf.config.experimental.set_visible_devices([], 'GPU')
+    #gpulist = tf.config.experimental.list_physical_devices('CPU')
+    #num_gpu = len(gpulist)
+    num_gpu = 1
+    comm_local_rank = comm_rank % num_gpu
+    #tf.config.experimental.set_visible_devices(gpulist[comm_local_rank], 'CPU')
 
     # set tfrecord dataset
     dataset = tf.data.TFRecordDataset(

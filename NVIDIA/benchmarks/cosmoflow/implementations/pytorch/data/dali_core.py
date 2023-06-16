@@ -101,14 +101,18 @@ class InputPipelineCore(object):
                      pipeline,
                      input_data,
                      input_label):
-        feature_map = input_data.gpu()
+        #feature_map = input_data.gpu()
+        # don't use gpu(), remains on cpu
+        feature_map = input_data
         #feature_map = dali_fn.cast(input_data.gpu(), dtype=dali_types.FLOAT)
         # if self._config["apply_log"]:
         #    feature_map = dali_math.log(feature_map + 1.0)
         # else:
         #    feature_map = feature_map / dali_fn.reductions.mean(feature_map)
 
-        pipeline.set_outputs(feature_map, input_label.gpu())
+        #pipeline.set_outputs(feature_map, input_label.gpu())
+        # don't use gpu(), remains on cpu
+        pipeline.set_outputs(feature_map, input_label)
 
     def get_inputs(self, pipelin, **kwargs):
         pass

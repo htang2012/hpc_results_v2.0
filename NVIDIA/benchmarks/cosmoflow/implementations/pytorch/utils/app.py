@@ -58,7 +58,12 @@ class PytorchApplication(MPIApplication):
 
     def init_ddp(self):
         if "mpi" in self._config:
-            torch.distributed.init_process_group("NCCL", init_method=f"tcp://{self._master_host}:12345",
+            torch.distributed.init_process_group(#"NCCL", init_method=f"tcp://{self._master_host}:12345",
+                                                 backend='hccl',
                                                  rank=self._distenv.rank,
                                                  world_size=self._distenv.size)
-            torch.cuda.set_device(self._distenv.local_rank)
+            #torch.cuda.set_device(self._distenv.local_rank)
+            # patch torch cuda functions that are being unconditionally invoked
+            # in the multiprocessing data loader
+            torch.cuda.current_device = lambda: None
+            torch.cuda.set_device = lambda x: None

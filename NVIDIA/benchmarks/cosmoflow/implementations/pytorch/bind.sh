@@ -80,7 +80,8 @@ if [ -z "${local_rank}" ]; then
     exit 1
 fi
 
-num_gpus=$(nvidia-smi -i 0 --query-gpu=count --format=csv,noheader,nounits)
+#num_gpus=$(hl-smi -i 0 --query-gpu=count --format=csv,noheader,nounits)
+num_gpus = "1"
 if [ "${local_rank}" -ge "${num_gpus}" ]; then
     echo "ERROR: local rank is ${local_rank}, but there are only ${num_gpus} gpus available" >&2
     exit 1

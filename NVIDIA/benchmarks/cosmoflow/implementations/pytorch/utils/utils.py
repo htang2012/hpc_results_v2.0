@@ -28,6 +28,8 @@ import os
 import torch
 import torch.distributed
 
+import habana_frameworks.torch.hpu as htcore
+import habana_frameworks.torch as ht
 
 @dataclasses.dataclass(frozen=True)
 class DistributedEnv(object):
@@ -123,6 +125,7 @@ class DistributedMeanAbsoluteError(object):
 
 
 class ProfilerSection(object):
+    #Currently, HPU does not support nvtx (NVDIA Tools Extension) function group. 
     def __init__(self, name: str, profile: bool = False):
         self.profile = profile
         self.name = name
@@ -137,11 +140,11 @@ class ProfilerSection(object):
             torch.cuda.nvtx.range_pop()
 
 
-class CudaExecutionTimer(object):
+class HPUExecutionTimer(object):
     def __init__(self, stream: Optional[torch.cuda.Stream] = None):
         self._stream = stream
-        self._start_event = torch.cuda.Event(enable_timing=True)
-        self._end_event = torch.cuda.Event(enable_timing=True)
+        self._start_event =ht.hpu.Event(enable_timing=True)
+        self._end_event = ht.hpu.Event(enable_timing=True)
 
     def __enter__(self):
         self._start_event.record(stream=self._stream)
@@ -161,12 +164,15 @@ class ExecutionTimer(object):
         self._profile = profile
 
     def __enter__(self):
-        torch.cuda.nvtx.range_push(self._name)
+        
+        if self._profile:
+           torch.cuda.nvtx.range_push(self._name)
         self._start_time = time.time()
         return self
 
     def __exit__(self, *args, **kwargs):
-        torch.cuda.nvtx.range_pop()
+        if self._profile:
+           torch.cuda.nvtx.range_pop()
         self._stop_time = time.time()
 
     def time_elapsed(self) -> float:
@@ -177,15 +183,17 @@ libcudart = None
 
 
 def cudaProfilerStart():
-    global libcudart
-    libcudart = cdll.LoadLibrary('libcudart.so')
-    libcudart.cudaProfilerStart()
+   # global libcudart
+   # libcudart = cdll.LoadLibrary('libcudart.so')
+   # libcudart.cudaProfilerStart()
+   pass
 
 
 def cudaProfilerStop():
-    global libcudart
-    assert libcudart, "libcudart undefined or None. cudaProfilerStart should be called before cudaProfilerStop"
-    libcudart.cudaProfilerStop()
+   # global libcudart
+   # assert libcudart, "libcudart undefined or None. cudaProfilerStart should be called before cudaProfilerStop"
+   # libcudart.cudaProfilerStop()
+   pass
 
 
 class Logger(object):
